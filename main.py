@@ -130,7 +130,7 @@ USERS = {}
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
     
-    # 1. Если файл есть локально — загружаем
+    # 1. Загрузка из локального файла
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -138,26 +138,31 @@ def load_user(chat_id):
             char = Character()
             char.__dict__.update(data)
             return char
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Ошибка чтения локального файла: {e}")
         
-    # 2. Если файла нет — тянем бэкап из группы Telegram
-    print(f"Локальный файл {filename} отсутствует. Ищу бэкап в группе...")
-    restored_data = restore_from_telegram(chat_id)
-    if restored_data:
-        char = Character()
-        char.__dict__.update(restored_data)
-        # Восстанавливаем файл локально
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
-        return char
+    # 2. Безопасный поиск бэкапа (если файла нет или он поврежден)
+    try:
+        print(f"Локальный файл {filename} отсутствует. Ищу бэкап в группе...")
+        restored_data = restore_from_telegram(chat_id)
+        if restored_data:
+            char = Character()
+            char.__dict__.update(restored_data)
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+            return char
+    except Exception as e:
+        print(f"Критическая ошибка восстановления: {e}")
         
     return Character(name="Герой")
 
 def save_user(chat_id, char):
     filename = f"char_{chat_id}.json"
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Ошибка локального сохранения: {e}")
     
     backup_to_telegram(chat_id, char)
 
@@ -167,20 +172,21 @@ def backup_to_telegram(chat_id, char):
         backup_msg = f"#BACKUP_ID_{chat_id}#\n{json_str}"
         bot.send_message(ADMIN_ID, backup_msg)
     except Exception as e:
-        print(f"Ошибка отправки бэкапа в группу: {e}")
+        print(f"Ошибка отправки бэкапа в группу {ADMIN_ID}: {e}")
 
 def restore_from_telegram(target_chat_id):
     try:
-        # ИСПРАВЛЕНО: Правильный вызов истории без именованного аргумента
         messages = bot.get_chat_history(ADMIN_ID, 100)
+        if not messages:
+            return None
+            
         marker = f"#BACKUP_ID_{target_chat_id}#"
-        
         for msg in messages:
             if msg.text and msg.text.startswith(marker):
                 json_part = msg.text.replace(marker, "").strip()
                 return json.loads(json_part)
     except Exception as e:
-        print(f"Ошибка чтения бэкапа из группы: {e}")
+        print(f"Ошибка чтения истории из группы: {e}")
     return None
 
 def get_leaderboard_text():
@@ -238,15 +244,18 @@ def main_keyboard():
 
 @bot.message_handler(commands=['start'])
 def start_game(message):
-    chat_id = message.chat.id
-    USERS[chat_id] = load_user(chat_id)
-    bot.send_message(
-        chat_id, 
-        "Привет! Твой личный трекер прокачки готов к работе.\n\n"
-        "💡 Чтобы изменить имя персонажа, напиши команду: `/name ТвоеИмя` (например: `/name Леха`)", 
-        reply_markup=main_keyboard(), 
-        parse_mode="Markdown"
-    )
+    try:
+        chat_id = message.chat.id
+        USERS[chat_id] = load_user(chat_id)
+        bot.send_message(
+            chat_id, 
+            "Привет! Твой личный трекер прокачки готов к работе.\n\n"
+            "💡 Чтобы изменить имя персонажа, напиши команду: `/name ТвоеИмя` (например: `/name Леха`)", 
+            reply_markup=main_keyboard(), 
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Ошибка команды /start: {e}")
 
 @bot.message_handler(commands=['name'])
 def change_name(message):
@@ -272,69 +281,72 @@ def change_name(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_menu(message):
-    chat_id = message.chat.id
-    # ИСПРАВЛЕНО: Безопасная проверка сессии, чтобы бот не крашился после рестарта Render
-    if chat_id not in USERS:
-        USERS[chat_id] = load_user(chat_id)
-        
-    player = USERS[chat_id]
+    try:
+        chat_id = message.chat.id
+        if chat_id not in USERS:
+            USERS[chat_id] = load_user(chat_id)
+            
+        player = USERS[chat_id]
 
-    if message.text == "📊 Мой статус":
-        bot.send_message(chat_id, player.get_stats_text())
-        
-    elif message.text == "🏆 Доска лидеров":
-        bot.send_message(chat_id, get_leaderboard_text(), parse_mode="Markdown")
-        
-    elif message.text in ["🤸 Отжался", "🏋️ Подтянулся", "🦵 Присел", "📖 Почитал"]:
-        action_map = {
-            "🤸 Отжался": ("Сколько раз отжался?", "pushups"),
-            "🏋️ Подтянулся": ("Сколько раз подтянулся?", "pullups"),
-            "🦵 Присел": ("Сколько раз присел?", "squats"),
-            "📖 Почитал": ("Сколько страниц прочитал?", "reading")
-        }
-        text, action_type = action_map[message.text]
-        msg = bot.send_message(chat_id, text, reply_markup=types.ReplyKeyboardRemove())
-        bot.register_next_step_handler(msg, process_input, action_type)
-        
-    elif message.text == "☀️ Сделал зарядку":
-        res = player.add_warmup()
-        save_user(chat_id, player)
-        bot.send_message(chat_id, res, reply_markup=main_keyboard())
-        
-    elif message.text == "🏃 Побегал":
-        res = player.add_run()
-        save_user(chat_id, player)
-        bot.send_message(chat_id, res, reply_markup=main_keyboard())
+        if message.text == "📊 Мой статус":
+            bot.send_message(chat_id, player.get_stats_text())
+            
+        elif message.text == "🏆 Доска лидеров":
+            bot.send_message(chat_id, get_leaderboard_text(), parse_mode="Markdown")
+            
+        elif message.text in ["🤸 Отжался", "🏋️ Подтянулся", "🦵 Присел", "📖 Почитал"]:
+            action_map = {
+                "🤸 Отжался": ("Сколько раз отжался?", "pushups"),
+                "🏋️ Подтянулся": ("Сколько раз подтянулся?", "pullups"),
+                "🦵 Присел": ("Сколько раз присел?", "squats"),
+                "📖 Почитал": ("Сколько страниц прочитал?", "reading")
+            }
+            text, action_type = action_map[message.text]
+            msg = bot.send_message(chat_id, text, reply_markup=types.ReplyKeyboardRemove())
+            bot.register_next_step_handler(msg, process_input, action_type)
+            
+        elif message.text == "☀️ Сделал зарядку":
+            res = player.add_warmup()
+            save_user(chat_id, player)
+            bot.send_message(chat_id, res, reply_markup=main_keyboard())
+            
+        elif message.text == "🏃 Побегал":
+            res = player.add_run()
+            save_user(chat_id, player)
+            bot.send_message(chat_id, res, reply_markup=main_keyboard())
+    except Exception as e:
+        print(f"Ошибка главного меню: {e}")
 
 def process_input(message, action_type):
-    chat_id = message.chat.id
-    # ИСПРАВЛЕНО: Безопасный перехват пользователя при вводе чисел
-    if chat_id not in USERS:
-        USERS[chat_id] = load_user(chat_id)
-        
-    player = USERS[chat_id]
-    
     try:
-        val = int(message.text)
-        if val <= 0:
-            bot.send_message(chat_id, "Число должно быть больше нуля!", reply_markup=main_keyboard())
-            return
-
-        if action_type == "pushups":
-            res = player.add_pushups(val)
-        elif action_type == "pullups":
-            res = player.add_pullups(val)
-        elif action_type == "squats":
-            res = player.add_squats(val)
-        elif action_type == "reading":
-            res = player.add_reading(val)
-
-        save_user(chat_id, player)
-        bot.send_message(chat_id, res, reply_markup=main_keyboard())
+        chat_id = message.chat.id
+        if chat_id not in USERS:
+            USERS[chat_id] = load_user(chat_id)
+            
+        player = USERS[chat_id]
         
-    except ValueError:
-        # ИСПРАВЛЕНО: Добавлен возврат главного меню при ошибке ввода
-        bot.send_message(chat_id, "❌ Ошибка! Введи обычное целое число.", reply_markup=main_keyboard())
+        try:
+            val = int(message.text)
+            if val <= 0:
+                bot.send_message(chat_id, "Число должно быть больше нуля!", reply_markup=main_keyboard())
+                return
+
+            if action_type == "pushups":
+                res = player.add_pushups(val)
+            elif action_type == "pullups":
+                res = player.add_pullups(val)
+            elif action_type == "squats":
+                res = player.add_squats(val)
+            elif action_type == "reading":
+                res = player.add_reading(val)
+
+            save_user(chat_id, player)
+            bot.send_message(chat_id, res, reply_markup=main_keyboard())
+            
+        except ValueError:
+            bot.send_message(chat_id, "❌ Ошибка! Введи обычное целое число.", reply_markup=main_keyboard())
+    except Exception as e:
+        print(f"Ошибка ввода числа: {e}")
 
 # 3. Запуск фонового веб-сервера и бота
 if __name__ == "__main__":
@@ -342,4 +354,4 @@ if __name__ == "__main__":
     t.start()
     
     print("Веб-сервер запущен. Включаю бесконечный опрос Telegram...")
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    bot.infinity_polling(timeout=15, long_polling_timeout=5)

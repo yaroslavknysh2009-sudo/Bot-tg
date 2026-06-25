@@ -18,7 +18,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # 2. Инициализация твоего бота
-TOKEN = '8882545649:AAG5OOw9Esgg0jmOr6MTnxAwf28K6YQieHk'
+TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
 
 class Character:

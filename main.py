@@ -5,7 +5,6 @@ import telebot
 from telebot import types
 import json
 import glob
-import io
 
 app = Flask('')
 
@@ -125,7 +124,7 @@ USERS = {}
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
     
-    # 1. Проверяем локальный файл
+    # 1. Сначала проверяем, есть ли файл локально в памяти контейнера
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -134,27 +133,28 @@ def load_user(chat_id):
             char.__dict__.update(data)
             return char
         except Exception as e:
-            print(f"Ошибка локального файла: {e}")
+            print(f"Ошибка чтения локального файла: {e}")
         
-    # 2. Восстановление файла из истории Телеграм-чата
+    # 2. Если локально файла нет (после перезапуска Render), ищем в закрепах
     try:
-        print(f"Ищу файл бэкапа в истории для {chat_id}...")
-        messages = bot.get_chat_history(ADMIN_ID, limit=100)
-        if messages:
-            for msg in messages:
-                if msg.document and msg.document.file_name == filename:
-                    file_info = bot.get_file(msg.document.file_id)
-                    downloaded_file = bot.download_file(file_info.file_path)
-                    data = json.loads(downloaded_file.decode('utf-8'))
-                    
-                    char = Character()
-                    char.__dict__.update(data)
-                    with open(filename, "w", encoding="utf-8") as f:
-                        json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
-                    print(f"Успешно восстановлено из файла ТГ для {chat_id}")
-                    return char
+        print(f"Ищу бэкап в закрепленных сообщениях чата для {chat_id}...")
+        chat = bot.get_chat(ADMIN_ID)
+        pinned_msg = chat.pinned_message
+        
+        if pinned_msg and pinned_msg.text and f"#BACKUP_ID_{chat_id}#" in pinned_msg.text:
+            lines = pinned_msg.text.split("\n", 1)
+            if len(lines) > 1:
+                json_data = json.loads(lines[1])
+                char = Character()
+                char.__dict__.update(json_data)
+                
+                # Сохраняем локально, чтобы не дергать ТГ постоянно
+                with open(filename, "w", encoding="utf-8") as f:
+                    json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+                print(f"Успешно восстановлено из закрепа для {chat_id}")
+                return char
     except Exception as e:
-        print(f"Не удалось восстановить из файла: {e}")
+        print(f"Не удалось восстановить из закрепленного сообщения: {e}")
         
     return Character(name="Герой")
 
@@ -164,21 +164,31 @@ def save_user(chat_id, char):
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"Ошибка сохранения файла: {e}")
+        print(f"Ошибка локального сохранения: {e}")
     
     backup_to_telegram(chat_id, char)
 
 def backup_to_telegram(chat_id, char):
-    filename = f"char_{chat_id}.json"
     try:
-        json_str = json.dumps(char.__dict__, ensure_ascii=False, indent=4)
+        json_str = json.dumps(char.__dict__, ensure_ascii=False)
+        backup_text = f"#BACKUP_ID_{chat_id}#\n{json_str}"
         
-        bio = io.BytesIO(json_str.encode('utf-8'))
-        bio.name = filename
-        
-        bot.send_document(ADMIN_ID, bio, caption=f"Бэкап для игрока @{chat_id}")
+        try:
+            chat = bot.get_chat(ADMIN_ID)
+            pinned_msg = chat.pinned_message
+            
+            # Если закреп уже есть и он принадлежит этому пользователю — обновляем его текст
+            if pinned_msg and pinned_msg.text and f"#BACKUP_ID_{chat_id}#" in pinned_msg.text:
+                bot.edit_message_text(backup_text, ADMIN_ID, pinned_msg.message_id)
+                return
+        except Exception:
+            pass
+            
+        # Если закрепа не было или он чужой — отправляем новый и закрепляем его
+        msg = bot.send_message(ADMIN_ID, backup_text)
+        bot.pin_chat_message(ADMIN_ID, msg.message_id, disable_notification=True)
     except Exception as e:
-        print(f"Ошибка создания файл-бэкапа: {e}")
+        print(f"Ошибка создания бэкапа в закрепе Телеграма: {e}")
 
 def get_leaderboard_text():
     user_files = glob.glob("char_*.json")
@@ -300,7 +310,7 @@ if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.start()
     
-    # Сбрасываем старые вебхуки и зависшие сессии, решая ошибку 409
+    # Сбрасываем старые зависшие сессии при перезапуске (убирает конфликт 409)
     bot.remove_webhook()
     
     bot.infinity_polling(timeout=15, long_polling_timeout=5)

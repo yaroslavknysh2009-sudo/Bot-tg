@@ -6,7 +6,7 @@ from telebot import types
 import json
 import glob
 
-# 1. Настройка Flask для бесперебойной работы на Render
+# 1. Настройка Flask для Render
 app = Flask('')
 
 @app.route('/')
@@ -17,9 +17,12 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# 2. Инициализация бота с твоим токеном
+# 2. Инициализация бота
 TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
+
+# Твой ID группы для сохранения бэкапов прогресса
+ADMIN_ID = -1004352455151  
 
 class Character:
     def __init__(self, name="Герой"):
@@ -126,18 +129,59 @@ USERS = {}
 
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
+    
+    # 1. Если файл есть локально — загружаем
     if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            char = Character()
+            char.__dict__.update(data)
+            return char
+        except Exception:
+            pass
+        
+    # 2. Если файла нет — тянем бэкап из группы Telegram
+    print(f"Локальный файл {filename} отсутствует. Ищу бэкап в группе...")
+    restored_data = restore_from_telegram(chat_id)
+    if restored_data:
         char = Character()
-        char.__dict__.update(data)
+        char.__dict__.update(restored_data)
+        # Восстанавливаем файл локально
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
         return char
-    return Character(name=f"Герой")
+        
+    return Character(name="Герой")
 
 def save_user(chat_id, char):
     filename = f"char_{chat_id}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+    
+    backup_to_telegram(chat_id, char)
+
+def backup_to_telegram(chat_id, char):
+    try:
+        json_str = json.dumps(char.__dict__, ensure_ascii=False)
+        backup_msg = f"#BACKUP_ID_{chat_id}#\n{json_str}"
+        bot.send_message(ADMIN_ID, backup_msg)
+    except Exception as e:
+        print(f"Ошибка отправки бэкапа в группу: {e}")
+
+def restore_from_telegram(target_chat_id):
+    try:
+        # ИСПРАВЛЕНО: Правильный вызов истории без именованного аргумента
+        messages = bot.get_chat_history(ADMIN_ID, 100)
+        marker = f"#BACKUP_ID_{target_chat_id}#"
+        
+        for msg in messages:
+            if msg.text and msg.text.startswith(marker):
+                json_part = msg.text.replace(marker, "").strip()
+                return json.loads(json_part)
+    except Exception as e:
+        print(f"Ошибка чтения бэкапа из группы: {e}")
+    return None
 
 def get_leaderboard_text():
     user_files = glob.glob("char_*.json")
@@ -161,7 +205,6 @@ def get_leaderboard_text():
     if not players:
         return "🏆 Доска лидеров пока пуста!"
         
-    # Сортировка по уровню и опыту
     players.sort(key=lambda x: (x["level"], x["exp"]), reverse=True)
     
     leaderboard = ["🏆 **ДОСКА ЛИДЕРОВ (ПОДРОБНАЯ)** 🏆\n──────────────────"]
@@ -230,6 +273,7 @@ def change_name(message):
 @bot.message_handler(func=lambda message: True)
 def handle_menu(message):
     chat_id = message.chat.id
+    # ИСПРАВЛЕНО: Безопасная проверка сессии, чтобы бот не крашился после рестарта Render
     if chat_id not in USERS:
         USERS[chat_id] = load_user(chat_id)
         
@@ -249,7 +293,7 @@ def handle_menu(message):
             "📖 Почитал": ("Сколько страниц прочитал?", "reading")
         }
         text, action_type = action_map[message.text]
-        msg = bot.send_message(chat_id, text)
+        msg = bot.send_message(chat_id, text, reply_markup=types.ReplyKeyboardRemove())
         bot.register_next_step_handler(msg, process_input, action_type)
         
     elif message.text == "☀️ Сделал зарядку":
@@ -264,12 +308,16 @@ def handle_menu(message):
 
 def process_input(message, action_type):
     chat_id = message.chat.id
+    # ИСПРАВЛЕНО: Безопасный перехват пользователя при вводе чисел
+    if chat_id not in USERS:
+        USERS[chat_id] = load_user(chat_id)
+        
     player = USERS[chat_id]
     
     try:
         val = int(message.text)
         if val <= 0:
-            bot.send_message(chat_id, "Число должно быть больше нуля!")
+            bot.send_message(chat_id, "Число должно быть больше нуля!", reply_markup=main_keyboard())
             return
 
         if action_type == "pushups":
@@ -285,6 +333,7 @@ def process_input(message, action_type):
         bot.send_message(chat_id, res, reply_markup=main_keyboard())
         
     except ValueError:
+        # ИСПРАВЛЕНО: Добавлен возврат главного меню при ошибке ввода
         bot.send_message(chat_id, "❌ Ошибка! Введи обычное целое число.", reply_markup=main_keyboard())
 
 # 3. Запуск фонового веб-сервера и бота
@@ -294,6 +343,3 @@ if __name__ == "__main__":
     
     print("Веб-сервер запущен. Включаю бесконечный опрос Telegram...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
-
-

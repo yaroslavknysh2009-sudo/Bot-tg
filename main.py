@@ -4,8 +4,9 @@ from flask import Flask
 import telebot
 from telebot import types
 import json
+import glob
 
-# 1. Настройка Flask для обмана Render
+# 1. Настройка Flask для бесперебойной работы на Render
 app = Flask('')
 
 @app.route('/')
@@ -13,11 +14,10 @@ def home():
     return "Бот запущен и работает круглосуточно!"
 
 def run_flask():
-    # Render сам передает нужный порт в переменную PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# 2. Инициализация твоего бота
+# 2. Инициализация бота с твоим токеном
 TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
 
@@ -139,9 +139,48 @@ def save_user(chat_id, char):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
 
+def get_leaderboard_text():
+    user_files = glob.glob("char_*.json")
+    players = []
+    
+    for file in user_files:
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                players.append({
+                    "name": data.get("name", "Герой"),
+                    "level": data.get("level", 1),
+                    "exp": data.get("exp", 0),
+                    "strength": data.get("strength", 10.0),
+                    "intelligence": data.get("intelligence", 10.0),
+                    "endurance": data.get("endurance", 10.0)
+                })
+        except Exception:
+            continue
+            
+    if not players:
+        return "🏆 Доска лидеров пока пуста!"
+        
+    # Сортировка по уровню и опыту
+    players.sort(key=lambda x: (x["level"], x["exp"]), reverse=True)
+    
+    leaderboard = ["🏆 **ДОСКА ЛИДЕРОВ (ПОДРОБНАЯ)** 🏆\n──────────────────"]
+    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+    
+    for index, p in enumerate(players):
+        medal = medals.get(index, "👤")
+        leaderboard.append(
+            f"{medal} {index+1}. **{p['name']}** — {p['level']} lvl\n"
+            f"└ 💪 Сил: {p['strength']:.1f} | 🧠 Инт: {p['intelligence']:.1f} | 🔋 Вын: {p['endurance']:.1f}\n"
+            f"──────────────────"
+        )
+        
+    return "\n".join(leaderboard)
+
 def main_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_stats = types.KeyboardButton("📊 Мой статус")
+    btn_leader = types.KeyboardButton("🏆 Доска лидеров")
     btn_push = types.KeyboardButton("🤸 Отжался")
     btn_pull = types.KeyboardButton("🏋️ Подтянулся")
     btn_squat = types.KeyboardButton("🦵 Присел")
@@ -149,7 +188,7 @@ def main_keyboard():
     btn_warmup = types.KeyboardButton("☀️ Сделал зарядку")
     btn_run = types.KeyboardButton("🏃 Побегал")
     
-    markup.add(btn_stats)
+    markup.add(btn_stats, btn_leader)
     markup.add(btn_push, btn_pull, btn_squat)
     markup.add(btn_read, btn_warmup, btn_run)
     return markup
@@ -158,7 +197,35 @@ def main_keyboard():
 def start_game(message):
     chat_id = message.chat.id
     USERS[chat_id] = load_user(chat_id)
-    bot.send_message(chat_id, "Привет! Твой личный трекер прокачки готов к работе. Выбери действие:", reply_markup=main_keyboard())
+    bot.send_message(
+        chat_id, 
+        "Привет! Твой личный трекер прокачки готов к работе.\n\n"
+        "💡 Чтобы изменить имя персонажа, напиши команду: `/name ТвоеИмя` (например: `/name Леха`)", 
+        reply_markup=main_keyboard(), 
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['name'])
+def change_name(message):
+    chat_id = message.chat.id
+    if chat_id not in USERS:
+        USERS[chat_id] = load_user(chat_id)
+        
+    player = USERS[chat_id]
+    
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(chat_id, "❌ Пожалуйста, укажи имя. Пример:\n`/name Александр`", parse_mode="Markdown")
+        return
+        
+    new_name = parts[1].strip()
+    if len(new_name) > 20:
+        bot.send_message(chat_id, "❌ Слишком длинное имя! Максимум 20 символов.")
+        return
+        
+    player.name = new_name
+    save_user(chat_id, player)
+    bot.send_message(chat_id, f"✅ Успешно! Теперь твоего персонажа зовут: **{new_name}**", parse_mode="Markdown", reply_markup=main_keyboard())
 
 @bot.message_handler(func=lambda message: True)
 def handle_menu(message):
@@ -170,6 +237,9 @@ def handle_menu(message):
 
     if message.text == "📊 Мой статус":
         bot.send_message(chat_id, player.get_stats_text())
+        
+    elif message.text == "🏆 Доска лидеров":
+        bot.send_message(chat_id, get_leaderboard_text(), parse_mode="Markdown")
         
     elif message.text in ["🤸 Отжался", "🏋️ Подтянулся", "🦵 Присел", "📖 Почитал"]:
         action_map = {
@@ -219,12 +289,11 @@ def process_input(message, action_type):
 
 # 3. Запуск фонового веб-сервера и бота
 if __name__ == "__main__":
-    # Сначала запускаем Flask в отдельном потоке
     t = Thread(target=run_flask)
     t.start()
     
     print("Веб-сервер запущен. Включаю бесконечный опрос Telegram...")
-    # Затем запускаем опрос Telegram
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
 
 

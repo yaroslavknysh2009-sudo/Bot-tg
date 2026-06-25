@@ -5,6 +5,7 @@ import telebot
 from telebot import types
 import json
 import glob
+import io
 
 app = Flask('')
 
@@ -135,18 +136,25 @@ def load_user(chat_id):
         except Exception as e:
             print(f"Ошибка локального файла: {e}")
         
-    # 2. Восстановление из истории группы (поиск по ID пользователя)
+    # 2. Восстановление файла из истории Телеграм-чата
     try:
-        print(f"Ищу локальный бэкап в истории для {chat_id}...")
-        restored_data = restore_from_telegram_history(chat_id)
-        if restored_data:
-            char = Character()
-            char.__dict__.update(restored_data)
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
-            return char
+        print(f"Ищу файл бэкапа в истории для {chat_id}...")
+        messages = bot.get_chat_history(ADMIN_ID, limit=100)
+        if messages:
+            for msg in messages:
+                if msg.document and msg.document.file_name == filename:
+                    file_info = bot.get_file(msg.document.file_id)
+                    downloaded_file = bot.download_file(file_info.file_path)
+                    data = json.loads(downloaded_file.decode('utf-8'))
+                    
+                    char = Character()
+                    char.__dict__.update(data)
+                    with open(filename, "w", encoding="utf-8") as f:
+                        json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
+                    print(f"Успешно восстановлено из файла ТГ для {chat_id}")
+                    return char
     except Exception as e:
-        print(f"Не удалось восстановить из истории: {e}")
+        print(f"Не удалось восстановить из файла: {e}")
         
     return Character(name="Герой")
 
@@ -161,31 +169,16 @@ def save_user(chat_id, char):
     backup_to_telegram(chat_id, char)
 
 def backup_to_telegram(chat_id, char):
+    filename = f"char_{chat_id}.json"
     try:
-        json_str = json.dumps(char.__dict__, ensure_ascii=False)
-        backup_msg = f"#BACKUP_ID_{chat_id}#\n{json_str}"
-        # Просто отправляем в группу, БЕЗ закрепов
-        bot.send_message(ADMIN_ID, backup_msg)
-    except Exception as e:
-        print(f"Ошибка создания бэкапа: {e}")
-
-def restore_from_telegram_history(target_chat_id):
-    try:
-        # Чтобы обойти Privacy Mode, временно используем безопасный перебор последних сообщений
-        # Бот гарантированно прочитает свои же сообщения, которые он отправлял в этот чат
-        updates = bot.get_updates(limit=100, allowed_updates=["message"])
+        json_str = json.dumps(char.__dict__, ensure_ascii=False, indent=4)
         
-        # Если через updates не вышло, используем прямой запрос истории (убедись, что Privacy Mode выключен по инструкции ранее)
-        messages = bot.get_chat_history(ADMIN_ID, limit=100)
-        if messages:
-            marker = f"#BACKUP_ID_{target_chat_id}#"
-            for msg in messages:
-                if msg.text and msg.text.startswith(marker):
-                    json_part = msg.text.replace(marker, "").strip()
-                    return json.loads(json_part)
+        bio = io.BytesIO(json_str.encode('utf-8'))
+        bio.name = filename
+        
+        bot.send_document(ADMIN_ID, bio, caption=f"Бэкап для игрока @{chat_id}")
     except Exception as e:
-        print(f"Ошибка чтения истории: {e}")
-    return None
+        print(f"Ошибка создания файл-бэкапа: {e}")
 
 def get_leaderboard_text():
     user_files = glob.glob("char_*.json")
@@ -234,7 +227,7 @@ def start_game(message):
     USERS[chat_id] = load_user(chat_id)
     bot.send_message(
         chat_id, 
-        f"Привет, {message.from_user.first_name}! Твой прогресс успешно загружен.\n\n"
+        f"Привет, {message.from_user.first_name}! Твой прогресс успешно загружен из облака.\n\n"
         "💡 Чтобы изменить имя в топе, напиши: `/name ТвоеИмя`", 
         reply_markup=main_keyboard(), 
         parse_mode="Markdown"
@@ -306,4 +299,8 @@ def process_input(message, action_type):
 if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.start()
+    
+    # Сбрасываем старые вебхуки и зависшие сессии, решая ошибку 409
+    bot.remove_webhook()
+    
     bot.infinity_polling(timeout=15, long_polling_timeout=5)

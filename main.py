@@ -19,8 +19,15 @@ def run_flask():
 TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
 
-# СПИСОК ГРУПП ДЛЯ БЭКАПОВ (Твоя и твоего друга с префиксом -100)
-GROUPS = [-1004352455151, -1005589576963]
+# ==========================================
+# ЖЕСТКАЯ НАСТРОЙКА ID ПОЛЬЗОВАТЕЛЕЙ И ГРУПП
+# ==========================================
+MY_TELEGRAM_ID = 5747659551        # Твой личный Telegram ID
+FRIEND_TELEGRAM_ID = 1294524809    # Личный Telegram ID твоего друга
+
+MY_GROUP_ID = -1004352455151       # Твоя группа бэкапов
+FRIEND_GROUP_ID = -1005589576963   # Группа бэкапов друга
+# ==========================================
 
 class Character:
     def __init__(self, name="Герой"):
@@ -124,28 +131,10 @@ class Character:
 USERS = {}
 
 def get_target_group(chat_id):
-    # Умный поиск: проверяем, в какой группе уже висит закреп этого пользователя
-    for group_id in GROUPS:
-        try:
-            chat = bot.get_chat(group_id)
-            pinned = chat.pinned_message
-            if pinned and pinned.text and f"#BACKUP_ID_{chat_id}#" in pinned.text:
-                return group_id
-        except Exception:
-            continue
-
-    # Если это новый пользователь (закрепа еще нет):
-    # Если в твоей первой группе нет закрепов, отправляем туда
-    try:
-        chat = bot.get_chat(GROUPS[0])
-        pinned = chat.pinned_message
-        if not pinned or not pinned.text or "#BACKUP_ID_" not in pinned.text:
-            return GROUPS[0]
-    except Exception:
-        pass
-
-    # Во всех остальных случаях новый пользователь идет во вторую группу (группу друга)
-    return GROUPS[1]
+    # Прямое распределение по ID пользователей
+    if int(chat_id) == int(FRIEND_TELEGRAM_ID):
+        return FRIEND_GROUP_ID
+    return MY_GROUP_ID
 
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"

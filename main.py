@@ -6,22 +6,18 @@ from telebot import types
 import json
 import glob
 
-# 1. Настройка Flask для Render
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Бот запущен и работает круглосуточно!"
+    return "Бот запущен и работает!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# 2. Инициализация бота
 TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
-
-# Твой ID группы для сохранения бэкапов прогресса
 ADMIN_ID = -1004352455151  
 
 class Character:
@@ -30,11 +26,9 @@ class Character:
         self.level = 1
         self.exp = 0
         self.exp_to_next_level = 100
-        
         self.strength = 10.0
         self.intelligence = 10.0
         self.endurance = 10.0
-        
         self.total_pushups = 0
         self.total_pullups = 0
         self.total_squats = 0
@@ -130,7 +124,7 @@ USERS = {}
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
     
-    # 1. Загрузка из локального файла
+    # 1. Сначала проверяем локальный файл
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -139,20 +133,21 @@ def load_user(chat_id):
             char.__dict__.update(data)
             return char
         except Exception as e:
-            print(f"Ошибка чтения локального файла: {e}")
+            print(f"Ошибка локального файла: {e}")
         
-    # 2. Безопасный поиск бэкапа (если файла нет или он поврежден)
+    # 2. Если файла нет (после перезапуска на Render), стягиваем из закрепа группы
     try:
-        print(f"Локальный файл {filename} отсутствует. Ищу бэкап в группе...")
-        restored_data = restore_from_telegram(chat_id)
+        print(f"Ищу бэкап в закрепе группы для {chat_id}...")
+        restored_data = restore_from_telegram_pinned(chat_id)
         if restored_data:
             char = Character()
             char.__dict__.update(restored_data)
+            # Сохраняем локально, чтобы постоянно не дёргать Telegram
             with open(filename, "w", encoding="utf-8") as f:
                 json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
             return char
     except Exception as e:
-        print(f"Критическая ошибка восстановления: {e}")
+        print(f"Не удалось восстановить из закрепа: {e}")
         
     return Character(name="Герой")
 
@@ -162,7 +157,7 @@ def save_user(chat_id, char):
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"Ошибка локального сохранения: {e}")
+        print(f"Ошибка сохранения файла: {e}")
     
     backup_to_telegram(chat_id, char)
 
@@ -170,29 +165,29 @@ def backup_to_telegram(chat_id, char):
     try:
         json_str = json.dumps(char.__dict__, ensure_ascii=False)
         backup_msg = f"#BACKUP_ID_{chat_id}#\n{json_str}"
-        bot.send_message(ADMIN_ID, backup_msg)
+        # Отправляем сообщение и сразу ЗАКРЕПЛЯЕМ его
+        msg = bot.send_message(ADMIN_ID, backup_msg)
+        bot.pin_chat_message(ADMIN_ID, msg.message_id, disable_notification=True)
     except Exception as e:
-        print(f"Ошибка отправки бэкапа в группу {ADMIN_ID}: {e}")
+        print(f"Ошибка создания бэкапа: {e}")
 
-def restore_from_telegram(target_chat_id):
+def restore_from_telegram_pinned(target_chat_id):
     try:
-        messages = bot.get_chat_history(ADMIN_ID, 100)
-        if not messages:
-            return None
-            
-        marker = f"#BACKUP_ID_{target_chat_id}#"
-        for msg in messages:
-            if msg.text and msg.text.startswith(marker):
-                json_part = msg.text.replace(marker, "").strip()
+        # Получаем данные самого чата — там хранится объект закрепленного сообщения
+        chat = bot.get_chat(ADMIN_ID)
+        if chat.pinned_message and chat.pinned_message.text:
+            text = chat.pinned_message.text
+            marker = f"#BACKUP_ID_{target_chat_id}#"
+            if text.startswith(marker):
+                json_part = text.replace(marker, "").strip()
                 return json.loads(json_part)
     except Exception as e:
-        print(f"Ошибка чтения истории из группы: {e}")
+        print(f"Ошибка чтения закрепа: {e}")
     return None
 
 def get_leaderboard_text():
     user_files = glob.glob("char_*.json")
     players = []
-    
     for file in user_files:
         try:
             with open(file, "r", encoding="utf-8") as f:
@@ -212,8 +207,7 @@ def get_leaderboard_text():
         return "🏆 Доска лидеров пока пуста!"
         
     players.sort(key=lambda x: (x["level"], x["exp"]), reverse=True)
-    
-    leaderboard = ["🏆 **ДОСКА ЛИДЕРОВ (ПОДРОБНАЯ)** 🏆\n──────────────────"]
+    leaderboard = ["🏆 **ДОСКА ЛИДЕРОВ** 🏆\n──────────────────"]
     medals = {0: "🥇", 1: "🥈", 2: "🥉"}
     
     for index, p in enumerate(players):
@@ -223,135 +217,91 @@ def get_leaderboard_text():
             f"└ 💪 Сил: {p['strength']:.1f} | 🧠 Инт: {p['intelligence']:.1f} | 🔋 Вын: {p['endurance']:.1f}\n"
             f"──────────────────"
         )
-        
     return "\n".join(leaderboard)
 
 def main_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_stats = types.KeyboardButton("📊 Мой статус")
-    btn_leader = types.KeyboardButton("🏆 Доска лидеров")
-    btn_push = types.KeyboardButton("🤸 Отжался")
-    btn_pull = types.KeyboardButton("🏋️ Подтянулся")
-    btn_squat = types.KeyboardButton("🦵 Присел")
-    btn_read = types.KeyboardButton("📖 Почитал")
-    btn_warmup = types.KeyboardButton("☀️ Сделал зарядку")
-    btn_run = types.KeyboardButton("🏃 Побегал")
-    
-    markup.add(btn_stats, btn_leader)
-    markup.add(btn_push, btn_pull, btn_squat)
-    markup.add(btn_read, btn_warmup, btn_run)
+    markup.add(types.KeyboardButton("📊 Мой статус"), types.KeyboardButton("🏆 Доска лидеров"))
+    markup.add(types.KeyboardButton("🤸 Отжался"), types.KeyboardButton("🏋️ Подтянулся"), types.KeyboardButton("🦵 Присел"))
+    markup.add(types.KeyboardButton("📖 Почитал"), types.KeyboardButton("☀️ Сделал зарядку"), types.KeyboardButton("🏃 Побегал"))
     return markup
 
 @bot.message_handler(commands=['start'])
 def start_game(message):
-    try:
-        chat_id = message.chat.id
-        USERS[chat_id] = load_user(chat_id)
-        bot.send_message(
-            chat_id, 
-            "Привет! Твой личный трекер прокачки готов к работе.\n\n"
-            "💡 Чтобы изменить имя персонажа, напиши команду: `/name ТвоеИмя` (например: `/name Леха`)", 
-            reply_markup=main_keyboard(), 
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        print(f"Ошибка команды /start: {e}")
+    chat_id = message.chat.id
+    USERS[chat_id] = load_user(chat_id)
+    bot.send_message(
+        chat_id, 
+        "Привет! Твой прогресс под надежной защитой закрепов чата.\n\n"
+        "💡 Изменить имя: `/name ТвоеИмя`", 
+        reply_markup=main_keyboard(), 
+        parse_mode="Markdown"
+    )
 
 @bot.message_handler(commands=['name'])
 def change_name(message):
     chat_id = message.chat.id
     if chat_id not in USERS:
         USERS[chat_id] = load_user(chat_id)
-        
     player = USERS[chat_id]
-    
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(chat_id, "❌ Пожалуйста, укажи имя. Пример:\n`/name Александр`", parse_mode="Markdown")
+        bot.send_message(chat_id, "❌ Укажи имя через пробел.")
         return
-        
-    new_name = parts[1].strip()
-    if len(new_name) > 20:
-        bot.send_message(chat_id, "❌ Слишком длинное имя! Максимум 20 символов.")
-        return
-        
-    player.name = new_name
+    player.name = parts[1].strip()
     save_user(chat_id, player)
-    bot.send_message(chat_id, f"✅ Успешно! Теперь твоего персонажа зовут: **{new_name}**", parse_mode="Markdown", reply_markup=main_keyboard())
+    bot.send_message(chat_id, f"✅ Имя изменено на: **{player.name}**", parse_mode="Markdown", reply_markup=main_keyboard())
 
 @bot.message_handler(func=lambda message: True)
 def handle_menu(message):
-    try:
-        chat_id = message.chat.id
-        if chat_id not in USERS:
-            USERS[chat_id] = load_user(chat_id)
-            
-        player = USERS[chat_id]
+    chat_id = message.chat.id
+    if chat_id not in USERS:
+        USERS[chat_id] = load_user(chat_id)
+    player = USERS[chat_id]
 
-        if message.text == "📊 Мой статус":
-            bot.send_message(chat_id, player.get_stats_text())
-            
-        elif message.text == "🏆 Доска лидеров":
-            bot.send_message(chat_id, get_leaderboard_text(), parse_mode="Markdown")
-            
-        elif message.text in ["🤸 Отжался", "🏋️ Подтянулся", "🦵 Присел", "📖 Почитал"]:
-            action_map = {
-                "🤸 Отжался": ("Сколько раз отжался?", "pushups"),
-                "🏋️ Подтянулся": ("Сколько раз подтянулся?", "pullups"),
-                "🦵 Присел": ("Сколько раз присел?", "squats"),
-                "📖 Почитал": ("Сколько страниц прочитал?", "reading")
-            }
-            text, action_type = action_map[message.text]
-            msg = bot.send_message(chat_id, text, reply_markup=types.ReplyKeyboardRemove())
-            bot.register_next_step_handler(msg, process_input, action_type)
-            
-        elif message.text == "☀️ Сделал зарядку":
-            res = player.add_warmup()
-            save_user(chat_id, player)
-            bot.send_message(chat_id, res, reply_markup=main_keyboard())
-            
-        elif message.text == "🏃 Побегал":
-            res = player.add_run()
-            save_user(chat_id, player)
-            bot.send_message(chat_id, res, reply_markup=main_keyboard())
-    except Exception as e:
-        print(f"Ошибка главного меню: {e}")
+    if message.text == "📊 Мой статус":
+        bot.send_message(chat_id, player.get_stats_text())
+    elif message.text == "🏆 Доска лидеров":
+        bot.send_message(chat_id, get_leaderboard_text(), parse_mode="Markdown")
+    elif message.text in ["🤸 Отжался", "🏋️ Подтянулся", "🦵 Присел", "📖 Почитал"]:
+        action_map = {
+            "🤸 Отжался": ("Сколько раз отжался?", "pushups"),
+            "🏋️ Подтянулся": ("Сколько раз подтянулся?", "pullups"),
+            "🦵 Присел": ("Сколько раз присел?", "squats"),
+            "📖 Почитал": ("Сколько страниц прочитал?", "reading")
+        }
+        text, action_type = action_map[message.text]
+        msg = bot.send_message(chat_id, text, reply_markup=types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_input, action_type)
+    elif message.text == "☀️ Сделал зарядку":
+        res = player.add_warmup()
+        save_user(chat_id, player)
+        bot.send_message(chat_id, res, reply_markup=main_keyboard())
+    elif message.text == "🏃 Побегал":
+        res = player.add_run()
+        save_user(chat_id, player)
+        bot.send_message(chat_id, res, reply_markup=main_keyboard())
 
 def process_input(message, action_type):
+    chat_id = message.chat.id
+    if chat_id not in USERS:
+        USERS[chat_id] = load_user(chat_id)
+    player = USERS[chat_id]
     try:
-        chat_id = message.chat.id
-        if chat_id not in USERS:
-            USERS[chat_id] = load_user(chat_id)
-            
-        player = USERS[chat_id]
-        
-        try:
-            val = int(message.text)
-            if val <= 0:
-                bot.send_message(chat_id, "Число должно быть больше нуля!", reply_markup=main_keyboard())
-                return
+        val = int(message.text)
+        if val <= 0:
+            bot.send_message(chat_id, "Введи число больше 0!", reply_markup=main_keyboard())
+            return
+        if action_type == "pushups": res = player.add_pushups(val)
+        elif action_type == "pullups": res = player.add_pullups(val)
+        elif action_type == "squats": res = player.add_squats(val)
+        elif action_type == "reading": res = player.add_reading(val)
+        save_user(chat_id, player)
+        bot.send_message(chat_id, res, reply_markup=main_keyboard())
+    except ValueError:
+        bot.send_message(chat_id, "❌ Введи целое число.", reply_markup=main_keyboard())
 
-            if action_type == "pushups":
-                res = player.add_pushups(val)
-            elif action_type == "pullups":
-                res = player.add_pullups(val)
-            elif action_type == "squats":
-                res = player.add_squats(val)
-            elif action_type == "reading":
-                res = player.add_reading(val)
-
-            save_user(chat_id, player)
-            bot.send_message(chat_id, res, reply_markup=main_keyboard())
-            
-        except ValueError:
-            bot.send_message(chat_id, "❌ Ошибка! Введи обычное целое число.", reply_markup=main_keyboard())
-    except Exception as e:
-        print(f"Ошибка ввода числа: {e}")
-
-# 3. Запуск фонового веб-сервера и бота
 if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.start()
-    
-    print("Веб-сервер запущен. Включаю бесконечный опрос Telegram...")
     bot.infinity_polling(timeout=15, long_polling_timeout=5)

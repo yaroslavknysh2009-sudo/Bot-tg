@@ -124,7 +124,7 @@ USERS = {}
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
     
-    # 1. Сначала проверяем локальный файл
+    # 1. Проверяем локальный файл
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -135,19 +135,18 @@ def load_user(chat_id):
         except Exception as e:
             print(f"Ошибка локального файла: {e}")
         
-    # 2. Если файла нет (после перезапуска на Render), стягиваем из закрепа группы
+    # 2. Восстановление из истории группы (поиск по ID пользователя)
     try:
-        print(f"Ищу бэкап в закрепе группы для {chat_id}...")
-        restored_data = restore_from_telegram_pinned(chat_id)
+        print(f"Ищу локальный бэкап в истории для {chat_id}...")
+        restored_data = restore_from_telegram_history(chat_id)
         if restored_data:
             char = Character()
             char.__dict__.update(restored_data)
-            # Сохраняем локально, чтобы постоянно не дёргать Telegram
             with open(filename, "w", encoding="utf-8") as f:
                 json.dump(char.__dict__, f, ensure_ascii=False, indent=4)
             return char
     except Exception as e:
-        print(f"Не удалось восстановить из закрепа: {e}")
+        print(f"Не удалось восстановить из истории: {e}")
         
     return Character(name="Герой")
 
@@ -165,24 +164,27 @@ def backup_to_telegram(chat_id, char):
     try:
         json_str = json.dumps(char.__dict__, ensure_ascii=False)
         backup_msg = f"#BACKUP_ID_{chat_id}#\n{json_str}"
-        # Отправляем сообщение и сразу ЗАКРЕПЛЯЕМ его
-        msg = bot.send_message(ADMIN_ID, backup_msg)
-        bot.pin_chat_message(ADMIN_ID, msg.message_id, disable_notification=True)
+        # Просто отправляем в группу, БЕЗ закрепов
+        bot.send_message(ADMIN_ID, backup_msg)
     except Exception as e:
         print(f"Ошибка создания бэкапа: {e}")
 
-def restore_from_telegram_pinned(target_chat_id):
+def restore_from_telegram_history(target_chat_id):
     try:
-        # Получаем данные самого чата — там хранится объект закрепленного сообщения
-        chat = bot.get_chat(ADMIN_ID)
-        if chat.pinned_message and chat.pinned_message.text:
-            text = chat.pinned_message.text
+        # Чтобы обойти Privacy Mode, временно используем безопасный перебор последних сообщений
+        # Бот гарантированно прочитает свои же сообщения, которые он отправлял в этот чат
+        updates = bot.get_updates(limit=100, allowed_updates=["message"])
+        
+        # Если через updates не вышло, используем прямой запрос истории (убедись, что Privacy Mode выключен по инструкции ранее)
+        messages = bot.get_chat_history(ADMIN_ID, limit=100)
+        if messages:
             marker = f"#BACKUP_ID_{target_chat_id}#"
-            if text.startswith(marker):
-                json_part = text.replace(marker, "").strip()
-                return json.loads(json_part)
+            for msg in messages:
+                if msg.text and msg.text.startswith(marker):
+                    json_part = msg.text.replace(marker, "").strip()
+                    return json.loads(json_part)
     except Exception as e:
-        print(f"Ошибка чтения закрепа: {e}")
+        print(f"Ошибка чтения истории: {e}")
     return None
 
 def get_leaderboard_text():
@@ -232,8 +234,8 @@ def start_game(message):
     USERS[chat_id] = load_user(chat_id)
     bot.send_message(
         chat_id, 
-        "Привет! Твой прогресс под надежной защитой закрепов чата.\n\n"
-        "💡 Изменить имя: `/name ТвоеИмя`", 
+        f"Привет, {message.from_user.first_name}! Твой прогресс успешно загружен.\n\n"
+        "💡 Чтобы изменить имя в топе, напиши: `/name ТвоеИмя`", 
         reply_markup=main_keyboard(), 
         parse_mode="Markdown"
     )

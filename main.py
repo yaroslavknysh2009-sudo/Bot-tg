@@ -1,9 +1,24 @@
+import os
+from threading import Thread
+from flask import Flask
 import telebot
 from telebot import types
 import json
-import os
 
-TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
+# 1. Настройка Flask для обмана Render
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Бот запущен и работает круглосуточно!"
+
+def run_flask():
+    # Render сам передает нужный порт в переменную PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# 2. Инициализация твоего бота
+TOKEN = '8882545649:AAG5OOw9Esgg0jmOr6MTnxAwf28K6YQieHk'
 bot = telebot.TeleBot(TOKEN)
 
 class Character:
@@ -202,6 +217,14 @@ def process_input(message, action_type):
     except ValueError:
         bot.send_message(chat_id, "❌ Ошибка! Введи обычное целое число.", reply_markup=main_keyboard())
 
-print("Бот успешно запущен и ждет тренировок...")
-bot.infinity_polling()
+# 3. Запуск фонового веб-сервера и бота
+if __name__ == "__main__":
+    # Сначала запускаем Flask в отдельном потоке
+    t = Thread(target=run_flask)
+    t.start()
+    
+    print("Веб-сервер запущен. Включаю бесконечный опрос Telegram...")
+    # Затем запускаем опрос Telegram
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
 

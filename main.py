@@ -19,10 +19,8 @@ def run_flask():
 TOKEN = '8882545649:AAHro2kI0AAE-pQcjJia_25hc7atDuolBC8'
 bot = telebot.TeleBot(TOKEN)
 
-# НАСТРОЙКА ГРУПП ДЛЯ БЭКАПОВ
-MY_CHAT_ID = 5747659551  # Твой личный Telegram ID (бот автоматически подставит его при первом сохранении)
-MY_GROUP_ID = -1004352455151  # Твоя группа бэкапов
-FRIEND_GROUP_ID = -5589576963  # Группа бэкапов твоего друга
+# СПИСОК ГРУПП ДЛЯ БЭКАПОВ (Твоя и твоего друга с префиксом -100)
+GROUPS = [-1004352455151, -1005589576963]
 
 class Character:
     def __init__(self, name="Герой"):
@@ -126,11 +124,28 @@ class Character:
 USERS = {}
 
 def get_target_group(chat_id):
-    # Если это твой ID — бэкапим в твою группу, иначе — в группу друга
-    global MY_CHAT_ID
-    if MY_CHAT_ID is None:
-        MY_CHAT_ID = chat_id  # Запоминаем твой ID при первом запуске
-    return MY_GROUP_ID if chat_id == MY_CHAT_ID else FRIEND_GROUP_ID
+    # Умный поиск: проверяем, в какой группе уже висит закреп этого пользователя
+    for group_id in GROUPS:
+        try:
+            chat = bot.get_chat(group_id)
+            pinned = chat.pinned_message
+            if pinned and pinned.text and f"#BACKUP_ID_{chat_id}#" in pinned.text:
+                return group_id
+        except Exception:
+            continue
+
+    # Если это новый пользователь (закрепа еще нет):
+    # Если в твоей первой группе нет закрепов, отправляем туда
+    try:
+        chat = bot.get_chat(GROUPS[0])
+        pinned = chat.pinned_message
+        if not pinned or not pinned.text or "#BACKUP_ID_" not in pinned.text:
+            return GROUPS[0]
+    except Exception:
+        pass
+
+    # Во всех остальных случаях новый пользователь идет во вторую группу (группу друга)
+    return GROUPS[1]
 
 def load_user(chat_id):
     filename = f"char_{chat_id}.json"
@@ -247,7 +262,7 @@ def start_game(message):
     USERS[chat_id] = load_user(chat_id)
     bot.send_message(
         chat_id, 
-        f"Привет, {message.from_user.first_name}! Твой прогресс успешно загружен из персонального облака.\n\n"
+        f"Привет, {message.from_user.first_name}! Твой прогресс успешно загружен.\n\n"
         "💡 Чтобы изменить имя в топе, напиши: `/name ТвоеИмя`", 
         reply_markup=main_keyboard(), 
         parse_mode="Markdown"
